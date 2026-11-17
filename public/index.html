@@ -13,17 +13,15 @@
     <!-- 1. 촬영 -->
     <section class="step step-camera" aria-label="촬영">
       <div class="stage">
-        <video id="video" autoplay playsinline muted></video>
+        <video id="video" class="cropped" autoplay playsinline muted></video>
         <p id="camera-msg" class="stage-msg" hidden></p>
         <div id="countdown" class="countdown" role="timer" aria-live="assertive" hidden>
           <span id="countdown-num" class="countdown-num"></span>
-          <span id="countdown-cap" class="countdown-cap"></span>
         </div>
         <div id="flash" class="flash"></div>
       </div>
       <div class="topbar">
         <button id="timer-btn" class="pill" type="button" data-lock></button>
-        <button id="mode-btn" class="pill" type="button" data-lock></button>
       </div>
       <div class="controls">
         <div id="filters" class="chips" role="radiogroup" aria-label="필터"></div>

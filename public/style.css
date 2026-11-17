@@ -56,6 +56,7 @@ body {
   inset: 0;
   background: #000;
   overflow: hidden;
+  container-type: size;
 }
 .stage video,
 .stage img {
@@ -65,6 +66,15 @@ body {
   display: block;
 }
 .stage video.mirror { transform: scaleX(-1); }
+/* A4 가로: 저장될 비율의 상자를 가운데 두고 영상을 꽉 채워 잘라 보여준다 */
+.stage video.cropped {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: min(100cqw, 100cqh * var(--crop));
+  height: min(100cqh, 100cqw / var(--crop));
+  object-fit: cover;
+}
 
 .stage-msg {
   position: absolute;
@@ -106,9 +116,8 @@ body {
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
-.countdown-cap { font-size: 18px; font-weight: 600; min-height: 1.5em; }
 
-/* 상단 설정: 타이머 · 컷 수 */
+/* 상단 설정: 타이머 */
 .topbar {
   position: absolute;
   top: 0;

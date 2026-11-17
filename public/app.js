@@ -2,18 +2,16 @@ const $ = (id) => document.getElementById(id);
 const app = document.querySelector('.app');
 const video = $('video');
 
-const JPEG_QUALITY = 0.9;
-const SINGLE_MAX_EDGE = 2400; // 1장 모드: 긴 변 최대 px
-const CELL_MAX_EDGE = 1200; // 4컷 모드: 한 컷의 긴 변 최대 px
-const FOUR_CUT_DEFAULT_WAIT = 3; // 4컷인데 타이머가 꺼져 있을 때 컷 사이 대기(초)
+const JPEG_QUALITY = 0.95;
+// 결과물은 항상 1장, A4 가로(297x210mm) 300dpi.
+const PAGE = [3508, 2480];
+const PAGE_ASPECT = PAGE[0] / PAGE[1];
+const PRINT_DPI = 300;
+const SHARPEN = 0.15; // 확대 전에 걸어주는 선명화 세기 (0이면 끔)
 
 const TIMERS = [0, 3, 5, 10];
 const DEFAULT_TIMER = 3;
 const STORAGE_KEY = 'photo-booth:v2'; // 기본값을 바꾸면 올려서 예전 저장값을 버린다
-const MODES = [
-  { id: 'single', label: '1장', shots: 1 },
-  { id: 'four', label: '4컷', shots: 4 },
-];
 // ops는 CSS filter 함수와 같은 이름·값. 미리보기(CSS)와 저장본(픽셀 계산)이 같은 식을 쓴다.
 const FILTERS = [
   { id: 'none', label: '원본', ops: [] },
@@ -29,19 +27,18 @@ const saved = (() => {
 })();
 const settings = {
   timer: TIMERS.includes(saved.timer) ? saved.timer : DEFAULT_TIMER,
-  mode: MODES.some((m) => m.id === saved.mode) ? saved.mode : 'single',
   filter: FILTERS.some((f) => f.id === saved.filter) ? saved.filter : 'none',
 };
-const currentMode = () => MODES.find((m) => m.id === settings.mode);
 const currentFilter = () => FILTERS.find((f) => f.id === settings.filter);
+
+// 미리보기도 저장될 영역(A4 가로)만 보이게 자른다 (가운데 기준, grabFrame과 같은 방식)
+video.style.setProperty('--crop', PAGE_ASPECT);
 
 function renderSettings() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch { /* 저장 못 해도 동작엔 지장 없음 */ }
 
   $('timer-btn').textContent = settings.timer ? `타이머 ${settings.timer}초` : '타이머 끔';
   $('timer-btn').classList.toggle('on', settings.timer > 0);
-  $('mode-btn').textContent = currentMode().label;
-  $('mode-btn').classList.toggle('on', settings.mode !== 'single');
 
   for (const chip of $('filters').children) {
     chip.setAttribute('aria-checked', String(chip.dataset.id === settings.filter));
@@ -63,10 +60,6 @@ for (const f of FILTERS) {
 
 $('timer-btn').addEventListener('click', () => {
   settings.timer = TIMERS[(TIMERS.indexOf(settings.timer) + 1) % TIMERS.length];
-  renderSettings();
-});
-$('mode-btn').addEventListener('click', () => {
-  settings.mode = MODES[(MODES.findIndex((m) => m.id === settings.mode) + 1) % MODES.length].id;
   renderSettings();
 });
 
@@ -91,7 +84,9 @@ async function startCamera() {
   }
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: facing, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      // 카메라가 낼 수 있는 가장 큰 해상도를 받는다. 4:3쪽으로 물어봐야 4:3 센서(폰 등)의
+      // 최대 모드가 골라지고, A4 가로(1.41)로 자를 때 버리는 픽셀도 16:9보다 적다.
+      video: { facingMode: facing, width: { ideal: 4096 }, height: { ideal: 3072 } },
       audio: false,
     });
     video.srcObject = stream;
@@ -180,56 +175,78 @@ function applyFilter(ctx, w, h, ops) {
 
 // ---------- 사진 만들기 ----------
 // 지금 화면에 보이는 그대로(좌우 반전·필터 포함) 한 컷을 캔버스로 뜬다.
-function grabFrame(maxEdge) {
+// 가운데를 aspect 비율로 잘라내고, 카메라 원본 픽셀 그대로(축소 없이) 뜬다.
+function grabFrame(aspect) {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
-  const scale = Math.min(1, maxEdge / Math.max(vw, vh));
+  let sw = vw;
+  let sh = vh;
+  if (vw / vh > aspect) sw = vh * aspect;
+  else sh = vw / aspect;
   const c = document.createElement('canvas');
-  c.width = Math.round(vw * scale);
-  c.height = Math.round(vh * scale);
+  c.width = Math.round(sw);
+  c.height = Math.round(sh);
   const ctx = c.getContext('2d', { willReadFrequently: true });
   if (video.classList.contains('mirror')) {
     ctx.translate(c.width, 0);
     ctx.scale(-1, 1);
   }
-  ctx.drawImage(video, 0, 0, c.width, c.height);
+  // 잘라낸 영역이 가운데라 좌우 반전 전후 위치가 같다
+  ctx.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, c.width, c.height);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   applyFilter(ctx, c.width, c.height, currentFilter().ops);
+  sharpen(ctx, c.width, c.height, SHARPEN);
   return c;
 }
 
-// 4컷을 흰 프레임의 2x2로 합친다. 아래 여백에 날짜가 들어간다.
-function composeFourCut(frames) {
-  const { width: w, height: h } = frames[0];
-  const pad = Math.round(w * 0.05);
-  const gap = Math.round(w * 0.03);
-  const footer = Math.round(w * 0.17);
+// 원본 해상도에서 가볍게 선명하게 해두면 A4로 키웠을 때 덜 뿌옇다.
+// 라플라시안 샤프닝: 자기 + a*(자기*4 - 상하좌우). 테두리 1px은 그대로.
+function sharpen(ctx, w, h, a) {
+  if (!a) return;
+  const image = ctx.getImageData(0, 0, w, h);
+  const s = image.data;
+  const d = new Uint8ClampedArray(s);
+  const row = w * 4;
+  const k = 1 + 4 * a;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * row + x * 4;
+      for (let j = i; j < i + 3; j++) {
+        d[j] = k * s[j] - a * (s[j - 4] + s[j + 4] + s[j - row] + s[j + row]);
+      }
+    }
+  }
+  image.data.set(d);
+  ctx.putImageData(image, 0, 0);
+}
+
+function resizeTo(src, [w, h]) {
   const c = document.createElement('canvas');
-  c.width = pad * 2 + w * 2 + gap;
-  c.height = pad + h * 2 + gap + footer;
+  c.width = w;
+  c.height = h;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, c.width, c.height);
-  frames.forEach((f, i) => {
-    ctx.drawImage(f, pad + (i % 2) * (w + gap), pad + Math.floor(i / 2) * (h + gap), w, h);
-  });
-  const now = new Date();
-  const date = [now.getFullYear(), now.getMonth() + 1, now.getDate()]
-    .map((n) => String(n).padStart(2, '0'))
-    .join('.');
-  ctx.fillStyle = '#3a3d3b';
-  ctx.font = `600 ${Math.round(w * 0.055)}px "Pretendard Variable", Pretendard, -apple-system, sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(date, c.width / 2, c.height - footer / 2);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(src, 0, 0, w, h);
   return c;
 }
 
 const toBlob = (c) => new Promise((resolve) => c.toBlob(resolve, 'image/jpeg', JPEG_QUALITY));
+
+// JFIF 헤더(APP0)의 해상도를 dpi로 고친다. 인쇄할 때 '실제 크기'로 뽑으면 용지 크기가 된다.
+// 브라우저가 JFIF 헤더를 안 넣었으면 그대로 둔다.
+async function withDpi(jpeg, dpi) {
+  const b = new Uint8Array(await jpeg.arrayBuffer());
+  const jfif = b[2] === 0xff && b[3] === 0xe0 && String.fromCharCode(...b.subarray(6, 11)) === 'JFIF\0';
+  if (!jfif) return jpeg;
+  b[13] = 1; // 단위: inch
+  b[14] = b[16] = dpi >> 8;
+  b[15] = b[17] = dpi & 0xff;
+  return new Blob([b], { type: 'image/jpeg' });
+}
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-// ---------- 촬영 진행 (타이머 · 여러 컷) ----------
+// ---------- 촬영 진행 (타이머) ----------
 let run = 0; // 촬영이 시작/취소될 때마다 올라간다. 값이 바뀌었으면 그 촬영은 취소된 것.
 let busy = false;
 
@@ -242,8 +259,7 @@ function setBusy(next) {
   if (!next) $('countdown').hidden = true;
 }
 
-async function countdown(seconds, token, caption) {
-  $('countdown-cap').textContent = caption;
+async function countdown(seconds, token) {
   $('countdown').hidden = false;
   for (let n = seconds; n > 0; n--) {
     $('countdown-num').textContent = n;
@@ -272,18 +288,12 @@ $('shutter').addEventListener('click', async () => {
     return;
   }
   const token = ++run;
-  const { shots } = currentMode();
-  const wait = shots > 1 ? settings.timer || FOUR_CUT_DEFAULT_WAIT : settings.timer;
   setBusy(true);
   try {
-    const frames = [];
-    for (let i = 0; i < shots; i++) {
-      if (wait && !(await countdown(wait, token, shots > 1 ? `${i + 1} / ${shots}` : ''))) return;
-      flash();
-      frames.push(grabFrame(shots > 1 ? CELL_MAX_EDGE : SINGLE_MAX_EDGE));
-    }
-    const result = shots > 1 ? composeFourCut(frames) : frames[0];
-    review(await toBlob(result));
+    if (settings.timer && !(await countdown(settings.timer, token))) return;
+    flash();
+    const jpeg = await toBlob(resizeTo(grabFrame(PAGE_ASPECT), PAGE));
+    review(jpeg && await withDpi(jpeg, PRINT_DPI));
   } finally {
     if (token === run) setBusy(false);
   }
