@@ -1,0 +1,18 @@
+{
+  "name": "photo-booth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "사진 찍고 QR/링크로 다운로드 받는 서비스 (틀)",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^5.3.0",
+    "qrcode": "^1.5.4"
+  }
+}
